@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' file:; style-src 'self' 'unsafe-inline' file:; img-src 'self' data: file:; font-src 'self' file:; script-src 'self' file:;" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Слой</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="wallpaper" hidden></div>
+  <div id="board" class="board" aria-label="Доска заметок"></div>
+
+  <header id="toolbar" class="toolbar" hidden>
+    <div class="toolbar-brand" title="Слой">
+      <span class="logo" aria-hidden="true"></span>
+      <span class="brand-name">Слой</span>
+    </div>
+    <div class="toolbar-actions">
+      <button type="button" data-action="new-note" title="Новая заметка (Ctrl+N)">+ Заметка</button>
+      <button type="button" data-action="new-block" title="Новый блок (Ctrl+Shift+N)">+ Блок</button>
+      <button type="button" data-action="toggle-theme" title="Тема">Тема</button>
+      <button type="button" data-action="export" title="Экспорт копии">Экспорт</button>
+      <button type="button" data-action="import" title="Импорт копии">Импорт</button>
+    </div>
+    <button type="button" class="toolbar-desk" data-action="to-desktop" title="Вернуть на рабочий стол (Ctrl+Alt+N)">
+      На рабочий стол
+    </button>
+  </header>
+
+  <div id="hint" class="hint" hidden></div>
+  <div id="toast" class="toast" hidden></div>
+  <div id="menu" class="menu" hidden role="menu"></div>
+
+  <script src="../shared/model.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,63 @@
+{
+  "name": "desktop-notes",
+  "productName": "Sloy",
+  "version": "1.0.0",
+  "description": "Слой — вложенные заметки прямо на рабочем столе Windows",
+  "main": "src/main/main.js",
+  "author": "Johny-Silverhand",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "build:win": "electron-builder --win --x64",
+    "screenshot": "electron . --screenshot",
+    "test": "node src/shared/model.test.js"
+  },
+  "devDependencies": {
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.johnysilverhand.sloy",
+    "productName": "Sloy",
+    "copyright": "Copyright © 2026 Johny-Silverhand",
+    "directories": {
+      "output": "dist",
+      "buildResources": "assets"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "icon": "assets/icon.ico",
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "Sloy-${version}-win-x64.${ext}",
+      "signAndEditExecutable": false
+    },
+    "portable": {
+      "artifactName": "Sloy-${version}-portable-win-x64.exe"
+    },
+    "extraMetadata": {
+      "name": "sloy"
+    }
+  },
+  "allowScripts": {
+    "electron@33.4.11": true
+  }
+}
