@@ -142,14 +142,136 @@ function clamp(v, a, b) {
   return Math.min(b, Math.max(a, v));
 }
 
-function normalizeState(raw) {
+function normalizeState(raw, opts) {
+  const primaryId = String((opts && opts.primaryId) || 'primary');
   const theme = raw && (raw.theme === 'light' || raw.theme === 'dark' || raw.theme === 'system')
     ? raw.theme
     : 'dark';
-  const items = raw && Array.isArray(raw.items)
-    ? raw.items.map(normalizeItem).filter(Boolean)
-    : [];
-  return { version: 1, theme, items };
+  const items = [];
+  if (raw && Array.isArray(raw.items)) {
+    for (const rawItem of raw.items) {
+      const item = normalizeItem(rawItem);
+      if (!item) continue;
+      let displayId = rawItem && rawItem.displayId != null && String(rawItem.displayId) !== ''
+        ? String(rawItem.displayId)
+        : primaryId;
+      let homeDisplayId = rawItem && rawItem.homeDisplayId != null && String(rawItem.homeDisplayId) !== ''
+        ? String(rawItem.homeDisplayId)
+        : displayId;
+      if (primaryId !== 'primary') {
+        if (displayId === 'primary') displayId = primaryId;
+        if (homeDisplayId === 'primary') homeDisplayId = primaryId;
+      }
+      item.displayId = displayId;
+      item.homeDisplayId = homeDisplayId;
+      items.push(item);
+    }
+  }
+  const layouts = {};
+  if (raw && raw.layouts && typeof raw.layouts === 'object' && !Array.isArray(raw.layouts)) {
+    for (const [key, val] of Object.entries(raw.layouts)) {
+      if (!val || typeof val !== 'object') continue;
+      layouts[String(key)] = {
+        x: num(val.x, 0),
+        y: num(val.y, 0),
+        width: num(val.width, 0),
+        height: num(val.height, 0)
+      };
+    }
+  }
+  return { version: 2, theme, items, layouts };
+}
+
+function boundsClose(a, b) {
+  if (!a || !b) return false;
+  return Math.abs(num(a.width, 0) - num(b.width, 0)) <= 5
+    && Math.abs(num(a.height, 0) - num(b.height, 0)) <= 5
+    && Math.abs(num(a.x, 0) - num(b.x, 0)) <= 40
+    && Math.abs(num(a.y, 0) - num(b.y, 0)) <= 40;
+}
+
+function itemsForDisplay(state, displayId) {
+  const id = String(displayId);
+  return (state && state.items ? state.items : []).filter((item) => String(item.displayId) === id);
+}
+
+function setDisplayItems(state, displayId, items) {
+  const id = String(displayId);
+  const others = (state.items || []).filter((item) => String(item.displayId) !== id);
+  const next = (items || []).map((raw) => {
+    const item = normalizeItem(raw);
+    if (!item) return null;
+    item.displayId = id;
+    item.homeDisplayId = raw && raw.homeDisplayId ? String(raw.homeDisplayId) : id;
+    return item;
+  }).filter(Boolean);
+  state.items = others.concat(next);
+  return state;
+}
+
+function transferItem(state, itemId, toDisplayId, x, y) {
+  const item = detach(state.items, itemId);
+  if (!item) return null;
+  const target = String(toDisplayId);
+  item.displayId = target;
+  item.homeDisplayId = target;
+  item.x = Number.isFinite(Number(x)) ? Number(x) : 80;
+  item.y = Number.isFinite(Number(y)) ? Number(y) : 80;
+  item.z = nextZ(itemsForDisplay(state, target));
+  state.items.push(item);
+  return item;
+}
+
+function reconcileDisplays(state, displays, primaryId) {
+  const primary = String(primaryId || 'primary');
+  const live = (displays || []).map((d) => ({
+    id: String(d.id),
+    x: num(d.bounds ? d.bounds.x : d.x, 0),
+    y: num(d.bounds ? d.bounds.y : d.y, 0),
+    width: num(d.bounds ? d.bounds.width : d.width, 0),
+    height: num(d.bounds ? d.bounds.height : d.height, 0)
+  }));
+  const liveIds = new Set(live.map((d) => d.id));
+  const layouts = Object.assign({}, state.layouts || {});
+
+  const remap = {};
+  const taken = new Set();
+  for (const [oldId, bounds] of Object.entries(layouts)) {
+    if (liveIds.has(oldId)) continue;
+    const match = live.find((d) => !taken.has(d.id) && boundsClose(bounds, d));
+    if (match) {
+      remap[oldId] = match.id;
+      taken.add(match.id);
+    }
+  }
+
+  for (const item of state.items || []) {
+    if (remap[item.displayId]) item.displayId = remap[item.displayId];
+    if (remap[item.homeDisplayId]) item.homeDisplayId = remap[item.homeDisplayId];
+  }
+
+  for (const item of state.items || []) {
+    if (item.homeDisplayId && liveIds.has(String(item.homeDisplayId))) {
+      item.displayId = String(item.homeDisplayId);
+    }
+  }
+
+  for (const item of state.items || []) {
+    if (!liveIds.has(String(item.displayId))) {
+      if (!item.homeDisplayId) item.homeDisplayId = String(item.displayId);
+      item.displayId = primary;
+    }
+  }
+
+  for (const [oldId, newId] of Object.entries(remap)) {
+    if (layouts[oldId] && !layouts[newId]) layouts[newId] = layouts[oldId];
+  }
+  for (const d of live) {
+    layouts[d.id] = { x: d.x, y: d.y, width: d.width, height: d.height };
+  }
+  state.layouts = layouts;
+  state.version = 2;
+  return state;
 }
 
 function demoBoard() {
@@ -248,6 +370,11 @@ const Model = {
   nextZ,
   normalizeItem,
   normalizeState,
+  itemsForDisplay,
+  setDisplayItems,
+  transferItem,
+  reconcileDisplays,
+  boundsClose,
   demoBoard,
   MIN_NOTE_W: 180,
   MIN_NOTE_H: 120,

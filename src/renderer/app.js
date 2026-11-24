@@ -14,6 +14,9 @@ const wallpaperEl = document.getElementById('wallpaper');
 let state = Model.normalizeState({ theme: 'dark', items: [] });
 let editMode = false;
 let firstRun = false;
+let displayId = null;
+let workArea = null;
+let applyingSync = false;
 let selectedId = null;
 let undoStack = [];
 let redoStack = [];
@@ -72,10 +75,39 @@ function redo() {
 }
 
 function scheduleSave() {
+  if (applyingSync) return;
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    if (api && api.saveBoard) api.saveBoard(state);
+    if (api && api.saveBoard) {
+      api.saveBoard({
+        theme: state.theme,
+        items: state.items,
+        displayId
+      });
+    }
   }, 280);
+}
+
+function applyRemoteState(next, opts) {
+  applyingSync = true;
+  try {
+    const normalized = Model.normalizeState(next, { primaryId: displayId || 'primary' });
+    state = {
+      version: 2,
+      theme: normalized.theme,
+      items: displayId
+        ? Model.itemsForDisplay(normalized, displayId).concat(
+            normalized.items.filter((item) => !item.displayId)
+          )
+        : normalized.items,
+      layouts: normalized.layouts
+    };
+    if (opts && opts.displayId) displayId = opts.displayId;
+    applyTheme();
+    renderAll();
+  } finally {
+    applyingSync = false;
+  }
 }
 
 function toast(text) {
@@ -568,6 +600,10 @@ function insertAt(item, parentId) {
       return;
     }
   }
+  if (displayId) {
+    item.displayId = displayId;
+    item.homeDisplayId = displayId;
+  }
   item.z = maxZ(state.items);
   state.items.push(item);
 }
@@ -714,10 +750,34 @@ function onDragUp(e) {
     }
   }
 
+  void finishDrop(item, current, e, cx, cy);
+}
+
+async function finishDrop(item, current, e, cx, cy) {
+  if (api && api.transferItem && e && typeof e.screenX === 'number') {
+    try {
+      const res = await api.transferItem({
+        id: item.id,
+        cursorX: e.screenX,
+        cursorY: e.screenY,
+        screenX: e.screenX - current.offsetX,
+        screenY: e.screenY - current.offsetY
+      });
+      if (res && res.ok) {
+        renderAll();
+        return;
+      }
+    } catch (_) { /* stay on this display */ }
+  }
+
   const pos = clientToParent(null, cx - current.offsetX, cy - current.offsetY);
   item.x = pos.x;
   item.y = pos.y;
   item.z = maxZ(state.items);
+  if (displayId) {
+    item.displayId = displayId;
+    item.homeDisplayId = displayId;
+  }
   state.items.push(item);
   clampToBoard(item);
   renderAll();
@@ -877,12 +937,7 @@ async function doExport() {
 async function doImport() {
   if (!api.importBoard) return;
   const res = await api.importBoard();
-  if (res && res.ok && res.state) {
-    pushUndo();
-    state = Model.normalizeState(res.state);
-    renderAll();
-    toast('Доска импортирована');
-  }
+  if (res && res.ok) toast('Доска импортирована');
 }
 
 let hotkey = 'Ctrl+Alt+N';
@@ -920,7 +975,7 @@ function updateChrome() {
   toolbarEl.hidden = !editMode;
   if (editMode && firstRun) {
     hintEl.hidden = false;
-    hintEl.textContent = 'Двойной щелчок — новая заметка. Перетаскивайте карточки в блоки. ' + hotkey + ' или кнопка «На рабочий стол» вернут их за окна. На столе карточку можно править, просто наведя на неё курсор.';
+    hintEl.textContent = 'Двойной щелчок — новая заметка. Карточку можно перетащить на другой монитор. ' + hotkey + ' или «На рабочий стол» вернут их за окна.';
   } else if (!editMode) {
     hintEl.hidden = true;
   }
@@ -963,9 +1018,7 @@ function onKeyDown(e) {
   }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n') {
     e.preventDefault();
-    const r = boardRect();
-    if (e.shiftKey) newBlock(r.width / 2 - 200, r.height / 2 - 140);
-    else newNote(r.width / 2 - 120, r.height / 2 - 80);
+    void createOnCursor(e.shiftKey ? 'block' : 'note');
     return;
   }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
@@ -1020,42 +1073,93 @@ document.addEventListener('pointerdown', (e) => {
 document.addEventListener('pointermove', (e) => syncIgnoreMouse(e.clientX, e.clientY), { passive: true });
 document.addEventListener('mousemove', (e) => syncIgnoreMouse(e.clientX, e.clientY), { passive: true });
 
+async function createOnCursor(type) {
+  if (api && api.displayUnderCursor) {
+    try {
+      const info = await api.displayUnderCursor();
+      if (info && info.displayId && displayId && info.displayId !== displayId) {
+        await api.createOnDisplay({
+          displayId: info.displayId,
+          type,
+          x: Math.max(24, (info.localX || 80) - 40),
+          y: Math.max(24, (info.localY || 80) - 20)
+        });
+        return;
+      }
+      if (info && typeof info.localX === 'number') {
+        if (type === 'block') newBlock(info.localX - 40, info.localY - 20);
+        else newNote(info.localX - 40, info.localY - 20);
+        return;
+      }
+    } catch (_) { /* local fallback */ }
+  }
+  const r = boardRect();
+  if (type === 'block') newBlock(r.width / 2 - 200, r.height / 2 - 140);
+  else newNote(r.width / 2 - 120, r.height / 2 - 80);
+}
+
+function receiveCreate(payload) {
+  if (!payload) return;
+  const x = Number.isFinite(Number(payload.x)) ? Number(payload.x) : boardRect().width / 2 - 80;
+  const y = Number.isFinite(Number(payload.y)) ? Number(payload.y) : 80;
+  if (payload.type === 'block') newBlock(x, y);
+  else newNote(x, y);
+}
+
 if (api && api.onEditMode) {
   api.onEditMode((value) => setEditModeUi(value));
 }
 if (api && api.onMeta) {
   api.onMeta((meta) => {
-    if (meta && meta.hotkey) hotkey = meta.hotkey;
+    if (!meta) return;
+    if (meta.hotkey) hotkey = meta.hotkey;
+    if (meta.displayId) displayId = meta.displayId;
+    if (meta.workArea) workArea = meta.workArea;
     updateChrome();
   });
+}
+if (api && api.onBoardSync) {
+  api.onBoardSync((payload) => {
+    if (!payload || !payload.state) return;
+    if (payload.displayId) displayId = payload.displayId;
+    applyRemoteState(payload.state, { displayId });
+  });
+}
+if (api && api.onCreateItem) {
+  api.onCreateItem((payload) => receiveCreate(payload));
 }
 
 async function boot() {
   if (!api) {
-    state = Model.demoBoard();
+    state = Model.normalizeState(Model.demoBoard(), { primaryId: 'primary' });
     firstRun = true;
     editMode = true;
     document.documentElement.classList.add('screenshot');
-    wallpaperEl.hidden = false;
+    if (wallpaperEl) wallpaperEl.hidden = false;
     renderAll();
     setEditModeUi(true);
     return;
   }
   const mode = await api.getEditMode();
   if (mode && mode.hotkey) hotkey = mode.hotkey;
+  if (mode && mode.displayId) displayId = mode.displayId;
+  if (mode && mode.workArea) workArea = mode.workArea;
   if (mode && mode.screenshot) {
     document.documentElement.classList.add('screenshot');
-    wallpaperEl.hidden = false;
+    if (wallpaperEl) wallpaperEl.hidden = false;
+  } else if (wallpaperEl) {
+    wallpaperEl.hidden = true;
+    wallpaperEl.remove();
   }
   try {
     const sys = await api.systemTheme();
     document.documentElement.dataset.systemTheme = sys || 'dark';
   } catch (_) { /* ignore */ }
   const loaded = await api.loadBoard();
-  state = Model.normalizeState(loaded.state);
+  if (loaded && loaded.displayId) displayId = loaded.displayId;
+  if (loaded && loaded.workArea) workArea = loaded.workArea;
+  applyRemoteState((loaded && loaded.state) || { theme: 'dark', items: [] }, { displayId });
   firstRun = !!loaded.firstRun;
-  applyTheme();
-  renderAll();
   setEditModeUi(!!(mode && mode.editMode) || !!(mode && mode.screenshot));
   if (firstRun && hintEl) {
     clearTimeout(hintTimer);

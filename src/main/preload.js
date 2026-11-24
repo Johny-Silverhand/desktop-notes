@@ -12,6 +12,9 @@ contextBridge.exposeInMainWorld('sloy', {
   getPaths: () => ipcRenderer.invoke('get-paths'),
   systemTheme: () => ipcRenderer.invoke('system-theme'),
   ignoreMouse: (ignore) => ipcRenderer.send('ignore-mouse', ignore),
+  displayUnderCursor: () => ipcRenderer.invoke('display-under-cursor'),
+  transferItem: (payload) => ipcRenderer.invoke('transfer-item', payload),
+  createOnDisplay: (payload) => ipcRenderer.invoke('create-on-display', payload),
   onEditMode: (cb) => {
     const listener = (_e, value) => cb(value);
     ipcRenderer.on('edit-mode', listener);
@@ -21,5 +24,15 @@ contextBridge.exposeInMainWorld('sloy', {
     const listener = (_e, value) => cb(value);
     ipcRenderer.on('app-meta', listener);
     return () => ipcRenderer.removeListener('app-meta', listener);
+  },
+  onBoardSync: (cb) => {
+    const listener = (_e, value) => cb(value);
+    ipcRenderer.on('board-sync', listener);
+    return () => ipcRenderer.removeListener('board-sync', listener);
+  },
+  onCreateItem: (cb) => {
+    const listener = (_e, value) => cb(value);
+    ipcRenderer.on('create-item', listener);
+    return () => ipcRenderer.removeListener('create-item', listener);
   }
 });
