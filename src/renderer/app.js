@@ -186,13 +186,11 @@ function renderItem(item) {
   el.appendChild(handle);
 
   el.addEventListener('pointerdown', (e) => {
-    if (!editMode) return;
     if (e.button !== 0 && e.button !== 2) return;
     select(item.id);
   });
 
   el.addEventListener('contextmenu', (e) => {
-    if (!editMode) return;
     e.preventDefault();
     e.stopPropagation();
     select(item.id);
@@ -262,7 +260,6 @@ function renderHeader(item) {
   header.appendChild(more);
 
   header.addEventListener('pointerdown', (e) => {
-    if (!editMode) return;
     if (e.button !== 0) return;
     if (e.target.closest('button, input, .item-title')) return;
     startDrag(e, item.id);
@@ -734,7 +731,6 @@ function clampToBoard(item) {
 }
 
 function startResize(e, id) {
-  if (!editMode) return;
   e.preventDefault();
   e.stopPropagation();
   const found = Model.findItem(state.items, id);
@@ -889,11 +885,42 @@ async function doImport() {
   }
 }
 
+let hotkey = 'Ctrl+Alt+N';
+let lastIgnore = null;
+
+function isInteractiveTarget(el) {
+  if (!el || !el.closest) return false;
+  return !!el.closest('.item, .toolbar, .menu, .toast, .hint, .icon-btn, button, input, textarea, .note-editor, .checklist, .resize-handle');
+}
+
+function syncIgnoreMouse(clientX, clientY) {
+  if (!api || !api.ignoreMouse) return;
+  if (editMode) {
+    if (lastIgnore !== false) {
+      api.ignoreMouse(false);
+      lastIgnore = false;
+    }
+    return;
+  }
+  if (typeof clientX !== 'number' || typeof clientY !== 'number') {
+    if (lastIgnore !== true) {
+      api.ignoreMouse(true);
+      lastIgnore = true;
+    }
+    return;
+  }
+  const ignore = !isInteractiveTarget(document.elementFromPoint(clientX, clientY));
+  if (ignore !== lastIgnore) {
+    api.ignoreMouse(ignore);
+    lastIgnore = ignore;
+  }
+}
+
 function updateChrome() {
   toolbarEl.hidden = !editMode;
   if (editMode && firstRun) {
     hintEl.hidden = false;
-    hintEl.textContent = 'Двойной щелчок — новая заметка. Перетаскивайте карточки в блоки. Ctrl+Alt+N — вернуть на рабочий стол.';
+    hintEl.textContent = 'Двойной щелчок — новая заметка. Перетаскивайте карточки в блоки. ' + hotkey + ' или кнопка «На рабочий стол» вернут их за окна. На столе карточку можно править, просто наведя на неё курсор.';
   } else if (!editMode) {
     hintEl.hidden = true;
   }
@@ -903,18 +930,18 @@ function setEditModeUi(value) {
   editMode = !!value;
   document.body.classList.toggle('edit-mode', editMode);
   hideMenu();
+  lastIgnore = null;
+  syncIgnoreMouse();
   updateChrome();
 }
 
 function onBoardDblClick(e) {
-  if (!editMode) return;
   if (e.target.closest('.item, .toolbar, .menu, .icon-btn')) return;
   const pos = clientToParent(null, e.clientX, e.clientY);
   newNote(pos.x - 40, pos.y - 20);
 }
 
 function onKeyDown(e) {
-  if (!editMode) return;
   const inField = e.target && (e.target.isContentEditable || /^(INPUT|TEXTAREA)$/.test(e.target.tagName));
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
     e.preventDefault();
@@ -982,7 +1009,6 @@ toolbarEl.addEventListener('click', (e) => {
 
 boardEl.addEventListener('dblclick', onBoardDblClick);
 boardEl.addEventListener('contextmenu', (e) => {
-  if (!editMode) return;
   if (e.target.closest('.item')) return;
   e.preventDefault();
   showBoardMenu(e.clientX, e.clientY);
@@ -991,9 +1017,17 @@ document.addEventListener('keydown', onKeyDown);
 document.addEventListener('pointerdown', (e) => {
   if (!menuEl.hidden && !menuEl.contains(e.target)) hideMenu();
 });
+document.addEventListener('pointermove', (e) => syncIgnoreMouse(e.clientX, e.clientY), { passive: true });
+document.addEventListener('mousemove', (e) => syncIgnoreMouse(e.clientX, e.clientY), { passive: true });
 
 if (api && api.onEditMode) {
   api.onEditMode((value) => setEditModeUi(value));
+}
+if (api && api.onMeta) {
+  api.onMeta((meta) => {
+    if (meta && meta.hotkey) hotkey = meta.hotkey;
+    updateChrome();
+  });
 }
 
 async function boot() {
@@ -1008,6 +1042,7 @@ async function boot() {
     return;
   }
   const mode = await api.getEditMode();
+  if (mode && mode.hotkey) hotkey = mode.hotkey;
   if (mode && mode.screenshot) {
     document.documentElement.classList.add('screenshot');
     wallpaperEl.hidden = false;

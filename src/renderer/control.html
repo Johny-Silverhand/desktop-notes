@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' file:; style-src 'self' 'unsafe-inline' file:; img-src 'self' data: file:; font-src 'self' file:; script-src 'self' file:;" />
+  <title>Слой</title>
+  <style>
+    @font-face {
+      font-family: "Manrope";
+      src: url("../../assets/fonts/Manrope-Variable.ttf") format("truetype");
+      font-weight: 200 800;
+      font-style: normal;
+      font-display: swap;
+    }
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: transparent;
+      font-family: "Manrope", "Segoe UI Variable", "Segoe UI", "Golos Text", system-ui, sans-serif;
+    }
+    button {
+      appearance: none;
+      width: calc(100% - 8px);
+      height: calc(100% - 8px);
+      margin: 4px;
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      border-radius: 16px;
+      background: rgba(16, 14, 22, 0.88);
+      color: #f4efe6;
+      font: 650 13.5px/1 "Manrope", "Segoe UI", sans-serif;
+      letter-spacing: -0.02em;
+      cursor: pointer;
+      box-shadow: 0 1px 0 rgba(255,255,255,0.14) inset, 0 10px 24px rgba(0,0,0,0.35);
+      -webkit-app-region: no-drag;
+    }
+    button.edit {
+      background: linear-gradient(180deg, #ffb84a, #f0a429);
+      color: #1a1520;
+      border-color: rgba(255, 220, 140, 0.45);
+      box-shadow: 0 1px 0 rgba(255,255,255,0.35) inset, 0 8px 20px rgba(255, 176, 60, 0.35);
+    }
+    button:active { transform: scale(0.98); }
+  </style>
+</head>
+<body>
+  <button type="button" id="toggle" class="edit">Редактировать</button>
+  <script src="control.js"></script>
+</body>
+</html>

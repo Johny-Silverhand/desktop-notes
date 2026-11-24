@@ -12,7 +12,6 @@ const SWP_SHOWWINDOW = 0x0040;
 const GWL_EXSTYLE = -20;
 const WS_EX_TOOLWINDOW = 0x00000080;
 const WS_EX_APPWINDOW = 0x00040000;
-const WS_EX_NOACTIVATE = 0x08000000;
 
 function hwndNumber(win) {
   const buf = win.getNativeWindowHandle();
@@ -63,55 +62,43 @@ ${body}
 `.trim();
 }
 
-async function attachToDesktop(win) {
+// Never parent the board to WorkerW: on Windows 11 this often makes the
+// window visible on the wallpaper but unable to receive mouse input.
+async function detachFromDesktop(win) {
+  if (process.platform !== 'win32') return { ok: true, method: 'noop' };
+  const hwnd = hwndNumber(win);
+  const script = win32Script(`
+$hwnd = [IntPtr](${hwnd})
+[SloyWin]::SetParent($hwnd, [IntPtr]::Zero) | Out-Null
+Write-Output "detached"
+`);
+  return runPowerShell(script);
+}
+
+async function placeAboveDesktop(win) {
   if (process.platform !== 'win32') return { ok: false, method: 'unsupported' };
   const hwnd = hwndNumber(win);
   const script = win32Script(`
 $hwnd = [IntPtr](${hwnd})
-# Hide from Alt+Tab
+[SloyWin]::SetParent($hwnd, [IntPtr]::Zero) | Out-Null
 $ex = [SloyWin]::GetWindowLong($hwnd, ${GWL_EXSTYLE})
 $ex = $ex -bor ${WS_EX_TOOLWINDOW}
 $ex = $ex -band (-bnot ${WS_EX_APPWINDOW})
 [SloyWin]::SetWindowLong($hwnd, ${GWL_EXSTYLE}, $ex) | Out-Null
-
-$progman = [SloyWin]::FindWindow("Progman", $null)
-$result = [IntPtr]::Zero
-[SloyWin]::SendMessageTimeout($progman, 0x052C, [IntPtr]::Zero, [IntPtr]::Zero, 0, 1000, [ref]$result) | Out-Null
-
-$worker = [IntPtr]::Zero
-$callback = [SloyWin+EnumWindowsProc]{
-  param([IntPtr]$top, [IntPtr]$l)
-  $def = [SloyWin]::FindWindowEx($top, [IntPtr]::Zero, "SHELLDLL_DefView", $null)
-  if ($def -ne [IntPtr]::Zero) {
-    $script:worker = [SloyWin]::FindWindowEx([IntPtr]::Zero, $top, "WorkerW", $null)
-  }
-  return $true
-}
-[SloyWin]::EnumWindows($callback, [IntPtr]::Zero) | Out-Null
-
-if ($worker -ne [IntPtr]::Zero) {
-  [SloyWin]::SetParent($hwnd, $worker) | Out-Null
-  Write-Output "workerw"
-} else {
-  $flags = ${SWP_NOMOVE} -bor ${SWP_NOSIZE} -bor ${SWP_NOACTIVATE} -bor ${SWP_SHOWWINDOW}
-  [SloyWin]::SetWindowPos($hwnd, [IntPtr]${HWND_BOTTOM}, 0, 0, 0, 0, $flags) | Out-Null
-  Write-Output "bottom"
-}
+$flags = ${SWP_NOMOVE} -bor ${SWP_NOSIZE} -bor ${SWP_NOACTIVATE} -bor ${SWP_SHOWWINDOW}
+[SloyWin]::SetWindowPos($hwnd, [IntPtr]${HWND_BOTTOM}, 0, 0, 0, 0, $flags) | Out-Null
+Write-Output "bottom"
 `);
   const res = await runPowerShell(script);
-  return { ok: res.ok, method: res.stdout || 'unknown', error: res.error };
+  return { ok: res.ok, method: res.stdout || 'bottom', error: res.error };
+}
+
+async function attachToDesktop(win) {
+  return placeAboveDesktop(win);
 }
 
 async function sendToBack(win) {
-  if (process.platform !== 'win32') return { ok: false };
-  const hwnd = hwndNumber(win);
-  const script = win32Script(`
-$hwnd = [IntPtr](${hwnd})
-$flags = ${SWP_NOMOVE} -bor ${SWP_NOSIZE} -bor ${SWP_NOACTIVATE}
-[SloyWin]::SetWindowPos($hwnd, [IntPtr]${HWND_BOTTOM}, 0, 0, 0, 0, $flags) | Out-Null
-Write-Output "ok"
-`);
-  return runPowerShell(script);
+  return placeAboveDesktop(win);
 }
 
 async function bringToFront(win) {
@@ -143,10 +130,17 @@ Write-Output "ok"
     win.show();
     win.focus();
     setTimeout(() => {
-      try { win.setAlwaysOnTop(false); } catch (_) { /* ignore */ }
+      try { if (win && !win.isDestroyed()) win.setAlwaysOnTop(false); } catch (_) { /* ignore */ }
     }, 200);
   } catch (_) { /* ignore */ }
   return res;
 }
 
-module.exports = { attachToDesktop, sendToBack, bringToFront, hwndNumber };
+module.exports = {
+  attachToDesktop,
+  detachFromDesktop,
+  placeAboveDesktop,
+  sendToBack,
+  bringToFront,
+  hwndNumber
+};

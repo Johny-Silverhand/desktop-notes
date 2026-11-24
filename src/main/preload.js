@@ -16,5 +16,10 @@ contextBridge.exposeInMainWorld('sloy', {
     const listener = (_e, value) => cb(value);
     ipcRenderer.on('edit-mode', listener);
     return () => ipcRenderer.removeListener('edit-mode', listener);
+  },
+  onMeta: (cb) => {
+    const listener = (_e, value) => cb(value);
+    ipcRenderer.on('app-meta', listener);
+    return () => ipcRenderer.removeListener('app-meta', listener);
   }
 });

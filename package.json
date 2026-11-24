@@ -1,7 +1,7 @@
 {
   "name": "desktop-notes",
   "productName": "Sloy",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Слой — вложенные заметки прямо на рабочем столе Windows",
   "main": "src/main/main.js",
   "author": "Johny-Silverhand",

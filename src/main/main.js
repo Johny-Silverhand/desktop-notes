@@ -1,13 +1,14 @@
 'use strict';
 
-const { app, BrowserWindow, Tray, Menu, nativeImage, globalShortcut, ipcMain, screen, nativeTheme } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, globalShortcut, ipcMain, screen, nativeTheme, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const store = require('./store');
 const desktopLayer = require('./desktop-layer');
 const Model = require('../shared/model');
 
-const HOTKEY = 'CommandOrControl+Alt+N';
+const HOTKEYS = ['CommandOrControl+Alt+N', 'CommandOrControl+Alt+Shift+N'];
+let activeHotkey = null;
 
 if (process.platform === 'linux') {
   app.disableHardwareAcceleration();
@@ -19,11 +20,14 @@ if (process.platform === 'linux') {
 }
 
 let mainWindow = null;
+let controlWindow = null;
 let tray = null;
-let editMode = false;
+let editMode = true;
 let isQuitting = false;
 let zOrderTimer = null;
 let screenshotPath = null;
+let interacting = false;
+let trayClickTimer = null;
 
 function parseArgs() {
   const arg = process.argv.find((a) => a === '--screenshot' || a.startsWith('--screenshot='));
@@ -46,9 +50,18 @@ function workArea() {
   return display.workArea;
 }
 
+function hotkeyLabel(accel) {
+  const key = accel || activeHotkey || HOTKEYS[0];
+  return key.replace('CommandOrControl+', 'Ctrl+').replace('Command+', 'Ctrl+');
+}
+
+function iconPath() {
+  return path.join(__dirname, '../../assets/icon.png');
+}
+
 function createWindow() {
   const area = workArea();
-  const icon = nativeImage.createFromPath(path.join(__dirname, '../../assets/icon.png'));
+  const icon = nativeImage.createFromPath(iconPath());
 
   mainWindow = new BrowserWindow({
     x: area.x,
@@ -98,12 +111,8 @@ function createWindow() {
       await runScreenshot();
       return;
     }
-    if (process.platform === 'win32') {
-      await enterDesktopMode();
-    } else {
-      editMode = true;
-      sendEditMode();
-    }
+    await enterEditMode();
+    showStartupNotification();
   });
 
   mainWindow.on('close', (e) => {
@@ -113,9 +122,60 @@ function createWindow() {
     }
   });
 
-  screen.on('display-metrics-changed', layoutToWorkArea);
+  mainWindow.on('blur', () => {
+    if (!editMode && !interacting && !isScreenshot()) {
+      desktopLayer.placeAboveDesktop(mainWindow);
+    }
+  });
+
+  screen.on('display-metrics-changed', () => {
+    layoutToWorkArea();
+    layoutControlWindow();
+  });
   screen.on('display-added', layoutToWorkArea);
   screen.on('display-removed', layoutToWorkArea);
+}
+
+function createControlWindow() {
+  if (isScreenshot()) return;
+  const area = workArea();
+  const width = 220;
+  const height = 48;
+  controlWindow = new BrowserWindow({
+    width,
+    height,
+    x: area.x + Math.round((area.width - width) / 2),
+    y: area.y + 14,
+    frame: false,
+    transparent: true,
+    backgroundColor: '#00000000',
+    hasShadow: false,
+    resizable: false,
+    movable: true,
+    minimizable: false,
+    maximizable: false,
+    closable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    show: false,
+    fullscreenable: false,
+    autoHideMenuBar: true,
+    icon: nativeImage.createFromPath(iconPath()),
+    type: process.platform === 'win32' ? 'toolbar' : undefined,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false
+    }
+  });
+  controlWindow.setAlwaysOnTop(true, 'screen-saver');
+  controlWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  controlWindow.setIgnoreMouseEvents(false);
+  controlWindow.loadFile(path.join(__dirname, '../renderer/control.html'));
+  controlWindow.on('close', (e) => {
+    if (!isQuitting) e.preventDefault();
+  });
 }
 
 function layoutToWorkArea() {
@@ -124,35 +184,70 @@ function layoutToWorkArea() {
   mainWindow.setBounds({ x: area.x, y: area.y, width: area.width, height: area.height });
 }
 
+function layoutControlWindow() {
+  if (!controlWindow || controlWindow.isDestroyed()) return;
+  const area = workArea();
+  const { width, height } = controlWindow.getBounds();
+  controlWindow.setBounds({
+    x: area.x + Math.round((area.width - width) / 2),
+    y: area.y + 14,
+    width,
+    height
+  });
+}
+
+function showControlWindow() {
+  if (!controlWindow || controlWindow.isDestroyed() || isScreenshot()) return;
+  layoutControlWindow();
+  controlWindow.setAlwaysOnTop(true, 'screen-saver');
+  controlWindow.setIgnoreMouseEvents(false);
+  controlWindow.showInactive();
+}
+
+function hideControlWindow() {
+  if (!controlWindow || controlWindow.isDestroyed()) return;
+  controlWindow.hide();
+}
+
 function sendEditMode() {
+  const payload = { editMode, hotkey: hotkeyLabel() };
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('edit-mode', editMode);
+    mainWindow.webContents.send('app-meta', payload);
+  }
+  if (controlWindow && !controlWindow.isDestroyed()) {
+    controlWindow.webContents.send('edit-mode', editMode);
+    controlWindow.webContents.send('app-meta', payload);
   }
   updateTrayMenu();
+  if (editMode) hideControlWindow();
+  else showControlWindow();
 }
 
 async function enterEditMode() {
   editMode = true;
+  interacting = true;
   stopZWatcher();
   if (!mainWindow || mainWindow.isDestroyed()) return;
   layoutToWorkArea();
   mainWindow.setIgnoreMouseEvents(false);
+  await desktopLayer.detachFromDesktop(mainWindow);
   await desktopLayer.bringToFront(mainWindow);
   sendEditMode();
 }
 
 async function enterDesktopMode() {
   editMode = false;
+  interacting = false;
   if (!mainWindow || mainWindow.isDestroyed()) return;
   layoutToWorkArea();
   if (isScreenshot()) return;
   mainWindow.setAlwaysOnTop(false);
   mainWindow.setIgnoreMouseEvents(true, { forward: true });
   if (process.platform === 'win32') {
-    const attached = await desktopLayer.attachToDesktop(mainWindow);
-    if (!attached.ok || attached.method === 'bottom') {
-      startZWatcher();
-    }
+    await desktopLayer.detachFromDesktop(mainWindow);
+    await desktopLayer.placeAboveDesktop(mainWindow);
+    startZWatcher();
   }
   sendEditMode();
 }
@@ -166,10 +261,11 @@ function startZWatcher() {
   stopZWatcher();
   if (process.platform !== 'win32') return;
   zOrderTimer = setInterval(() => {
-    if (!editMode && mainWindow && !mainWindow.isDestroyed()) {
-      desktopLayer.sendToBack(mainWindow);
+    if (editMode || interacting) return;
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isFocused()) {
+      desktopLayer.placeAboveDesktop(mainWindow);
     }
-  }, 1200);
+  }, 1500);
 }
 
 function stopZWatcher() {
@@ -191,7 +287,20 @@ function trayIcon() {
 function createTray() {
   tray = new Tray(trayIcon());
   tray.setToolTip('Слой — заметки на рабочем столе');
-  tray.on('click', () => toggleEditMode());
+  tray.on('click', () => {
+    if (trayClickTimer) return;
+    trayClickTimer = setTimeout(() => {
+      trayClickTimer = null;
+      toggleEditMode();
+    }, 280);
+  });
+  tray.on('double-click', () => {
+    if (trayClickTimer) {
+      clearTimeout(trayClickTimer);
+      trayClickTimer = null;
+    }
+    toggleEditMode();
+  });
   updateTrayMenu();
 }
 
@@ -219,15 +328,18 @@ function setAutostart(enabled) {
 function updateTrayMenu() {
   if (!tray) return;
   const auto = isAutostart();
+  const accel = hotkeyLabel();
   const template = [
     {
-      label: editMode ? 'Вернуть на рабочий стол' : 'Режим правки',
-      accelerator: 'Ctrl+Alt+N',
+      label: 'Режим правки',
+      type: 'checkbox',
+      checked: editMode,
+      accelerator: accel,
       click: () => toggleEditMode()
     },
     {
-      label: 'Показать доску',
-      click: () => enterEditMode()
+      label: editMode ? 'Вернуть на рабочий стол' : 'Редактировать',
+      click: () => toggleEditMode()
     },
     { type: 'separator' },
     {
@@ -246,6 +358,46 @@ function updateTrayMenu() {
     }
   ];
   tray.setContextMenu(Menu.buildFromTemplate(template));
+}
+
+function registerHotkeys() {
+  activeHotkey = null;
+  for (const key of HOTKEYS) {
+    let ok = false;
+    try {
+      ok = globalShortcut.register(key, () => toggleEditMode());
+    } catch (err) {
+      console.error('Hotkey threw', key, err);
+      ok = false;
+    }
+    if (ok) {
+      activeHotkey = key;
+      console.log('Registered hotkey', key);
+      return key;
+    }
+    console.error('Failed to register hotkey', key);
+  }
+  console.error('No global hotkey registered; use the tray icon or the «Редактировать» button');
+  return null;
+}
+
+function showStartupNotification() {
+  try {
+    if (!Notification.isSupported()) return;
+    const key = hotkeyLabel();
+    const body = activeHotkey
+      ? `Наведите курсор на карточку, чтобы править её прямо на столе. Полный режим: ${key}, кнопка «Редактировать» или значок в трее.`
+      : 'Наведите курсор на карточку, чтобы править её. Горячая клавиша не зарегистрировалась — откройте режим правки кнопкой «Редактировать» или значком в трее.';
+    const n = new Notification({
+      title: 'Слой',
+      body,
+      icon: nativeImage.createFromPath(iconPath()),
+      silent: true
+    });
+    n.show();
+  } catch (err) {
+    console.error('notification', err);
+  }
 }
 
 function registerIpc() {
@@ -275,10 +427,14 @@ function registerIpc() {
   ipcMain.handle('set-edit-mode', async (_e, value) => {
     if (value) await enterEditMode();
     else await enterDesktopMode();
-    return { editMode };
+    return { editMode, hotkey: hotkeyLabel() };
   });
 
-  ipcMain.handle('get-edit-mode', () => ({ editMode, screenshot: isScreenshot() }));
+  ipcMain.handle('get-edit-mode', () => ({
+    editMode,
+    screenshot: isScreenshot(),
+    hotkey: hotkeyLabel()
+  }));
 
   ipcMain.handle('get-paths', () => ({
     dataDir: store.dataDir(),
@@ -288,9 +444,11 @@ function registerIpc() {
   ipcMain.on('ignore-mouse', (_e, ignore) => {
     if (!mainWindow || mainWindow.isDestroyed() || isScreenshot()) return;
     if (editMode) {
+      interacting = true;
       mainWindow.setIgnoreMouseEvents(false);
       return;
     }
+    interacting = !ignore;
     mainWindow.setIgnoreMouseEvents(!!ignore, { forward: true });
   });
 
@@ -302,16 +460,12 @@ async function runScreenshot() {
     editMode = true;
     sendEditMode();
     mainWindow.setIgnoreMouseEvents(false);
-    mainWindow.webContents.on('console-message', (_e, level, message) => {
-      console.log('renderer', level, message);
-    });
     for (let i = 0; i < 20; i++) {
       await new Promise((r) => setTimeout(r, 250));
       try {
         const n = await mainWindow.webContents.executeJavaScript(
           'document.querySelectorAll(".item").length'
         );
-        console.log('items-on-board', n);
         console.log('items-on-board', n);
         if (n > 0) break;
       } catch (err) {
@@ -349,9 +503,10 @@ function startApp() {
   registerIpc();
   createWindow();
   if (!isScreenshot()) {
+    createControlWindow();
     createTray();
-    const ok = globalShortcut.register(HOTKEY, () => toggleEditMode());
-    if (!ok) console.error('Failed to register hotkey', HOTKEY);
+    registerHotkeys();
+    updateTrayMenu();
   }
 }
 
